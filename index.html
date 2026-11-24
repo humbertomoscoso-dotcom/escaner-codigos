@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Escáner de códigos</title>
+<style>
+:root{--bg:#f5f6f8;--fg:#1d2330;--card:#ffffff;--accent:#2563eb;--ok:#15803d;--err:#b91c1c;--muted:#6b7280;--line:#9ca3af66}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0f1218;--fg:#e8ebf0;--card:#1a1f2b;--accent:#60a5fa;--ok:#4ade80;--err:#f87171;--muted:#9aa3b2;--line:#4b5563}}
+:root[data-theme="dark"]{--bg:#0f1218;--fg:#e8ebf0;--card:#1a1f2b;--accent:#60a5fa;--ok:#4ade80;--err:#f87171;--muted:#9aa3b2;--line:#4b5563}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:16px;max-width:520px;margin-inline:auto}
+h1{font-size:20px;margin:4px 0 12px}
+.card{background:var(--card);border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+#video{width:100%;aspect-ratio:4/3;border-radius:10px;background:#000;object-fit:cover;display:block}
+button{font:inherit;font-weight:600;border:0;border-radius:10px;padding:12px 14px;background:var(--accent);color:#fff;width:100%;cursor:pointer}
+button:disabled{opacity:.6}
+button.sec{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+label{display:block;font-size:14px;color:var(--muted);margin:12px 0 4px}
+input,select,textarea{width:100%;font:inherit;font-size:16px;padding:11px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--fg)}
+textarea{min-height:70px;resize:vertical}
+.row{display:flex;gap:8px}
+.row>*{flex:1}
+.hint{font-size:13px;color:var(--muted);margin-top:6px}
+#status{margin-top:12px;padding:10px;border-radius:10px;font-size:15px;display:none}
+#status.ok{display:block;background:#15803d22;color:var(--ok)}
+#status.err{display:block;background:#b91c1c22;color:var(--err)}
+#status.info{display:block;background:#2563eb22;color:var(--accent)}
+</style>
+</head>
+<body>
+<h1>Escáner de códigos</h1>
+
+<div class="card">
+  <video id="video" playsinline muted></video>
+  <div class="row" style="margin-top:10px">
+    <button type="button" id="btnCam">Iniciar cámara</button>
+    <button type="button" id="btnStop" class="sec">Detener</button>
+  </div>
+  <div class="hint" id="camMsg">Apunta la cámara al código EAN-13 o Code 128.</div>
+</div>
+
+<form id="form" class="card" autocomplete="off">
+  <label for="tipo">Tipo</label>
+  <select id="tipo">
+    <option value="Bodega">Bodega</option>
+    <option value="Medidor">Medidor</option>
+  </select>
+
+  <label for="codigo">Código</label>
+  <input id="codigo" inputmode="numeric" placeholder="Escanea o escribe el código" required>
+  <div class="hint" id="fmtHint">Formato: manual</div>
+
+  <label for="cantidad" id="lblCant">Cantidad</label>
+  <input id="cantidad" type="number" step="any" min="0" inputmode="decimal" required>
+
+  <label for="usuario">Usuario</label>
+  <input id="usuario" required>
+
+  <label for="notas">Notas</label>
+  <textarea id="notas"></textarea>
+
+  <div style="margin-top:14px"><button type="submit" id="btnSave">Guardar</button></div>
+  <div id="status"></div>
+</form>
+
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script>
+const ENDPOINT = 'https://script.google.com/macros/s/AKfycby0zGzFOJKcRlh_S4bj3W0yZ0SZA-XTngayetWyxccmnRKl56rYMcBDZ4d74vEVMVYsow/exec';
+const TOKEN = 'esc-7Qk2mPzX9rLw4VbN8tHc3yJd1';
+const HOJA = 'Escaneos';
+
+const $ = (id) => document.getElementById(id);
+const video = $('video');
+let reader = null;
+let lastCode = '';
+let lastTime = 0;
+
+function setStatus(text, kind) {
+  const s = $('status');
+  s.textContent = text;
+  s.className = kind || '';
+}
+
+function setCamMsg(text) { $('camMsg').textContent = text; }
+
+function updateLabel() {
+  $('lblCant').textContent = $('tipo').value === 'Medidor' ? 'Lectura' : 'Cantidad';
+}
+
+function onScan(text, format) {
+  const now = Date.now();
+  if (text === lastCode && now - lastTime < 2000) return;
+  lastCode = text;
+  lastTime = now;
+  $('codigo').value = text;
+  const fmt = format === ZXing.BarcodeFormat.EAN_13 ? 'EAN-13' : 'Code 128';
+  $('fmtHint').textContent = 'Formato: ' + fmt;
+  if (navigator.vibrate) navigator.vibrate(120);
+  stopCam();
+  setCamMsg('Código leído: ' + text + ' (' + fmt + ')');
+}
+
+async function startCam() {
+  if (reader) return;
+  if (!window.ZXing) {
+    setCamMsg('No se cargó el lector de códigos. Revisa la conexión y recarga.');
+    return;
+  }
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.CODE_128]);
+  hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+  reader = new ZXing.BrowserMultiFormatReader(hints);
+  setCamMsg('Abriendo cámara…');
+  try {
+    await reader.decodeFromConstraints(
+      { video: { facingMode: { ideal: 'environment' } } },
+      video,
+      (result) => { if (result) onScan(result.getText(), result.getBarcodeFormat()); }
+    );
+    setCamMsg('Cámara activa. Apunta al código.');
+  } catch (e) {
+    setCamMsg('No se pudo abrir la cámara: ' + (e && e.message ? e.message : e));
+    stopCam(true);
+  }
+}
+
+function stopCam(keepMsg) {
+  if (reader) {
+    try { reader.reset(); } catch (e) { /* ignorar */ }
+    reader = null;
+  }
+  if (!keepMsg) setCamMsg('Cámara detenida.');
+}
+
+async function save(e) {
+  e.preventDefault();
+  const btn = $('btnSave');
+  const payload = {
+    token: TOKEN,
+    hoja: HOJA,
+    fecha: new Date().toISOString(),
+    tipo: $('tipo').value,
+    codigo: $('codigo').value.trim(),
+    formato: $('fmtHint').textContent.replace('Formato: ', ''),
+    cantidad: $('cantidad').value,
+    usuario: $('usuario').value.trim(),
+    notas: $('notas').value.trim()
+  };
+  try { localStorage.setItem('usuario', payload.usuario); } catch (err) { /* sin almacenamiento */ }
+
+  btn.disabled = true;
+  setStatus('Guardando…', 'info');
+  try {
+    // text/plain evita el preflight CORS; Apps Script lee el JSON del cuerpo.
+    const res = await fetch(ENDPOINT, { method: 'POST', body: JSON.stringify(payload) });
+    const data = await res.json();
+    if (data.ok) {
+      setStatus('Guardado en la hoja.', 'ok');
+      $('codigo').value = '';
+      $('cantidad').value = '';
+      $('notas').value = '';
+      $('fmtHint').textContent = 'Formato: manual';
+      lastCode = '';
+    } else {
+      setStatus('Error: ' + (data.error || 'respuesta no válida'), 'err');
+    }
+  } catch (err) {
+    setStatus('No se pudo confirmar el envío. Revisa la hoja antes de reintentar.', 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$('btnCam').addEventListener('click', startCam);
+$('btnStop').addEventListener('click', () => stopCam());
+$('tipo').addEventListener('change', updateLabel);
+$('form').addEventListener('submit', save);
+$('codigo').addEventListener('input', () => { $('fmtHint').textContent = 'Formato: manual'; });
+
+try { $('usuario').value = localStorage.getItem('usuario') || ''; } catch (err) { /* ignorar */ }
+updateLabel();
+window.addEventListener('pagehide', () => stopCam(true));
+</script>
+</body>
+</html>
